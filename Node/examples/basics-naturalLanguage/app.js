@@ -1,28 +1,33 @@
 /*-----------------------------------------------------------------------------
-This Bot demonstrates how to use a LuisDialog to add natural language support
-to a bot. The example also shows how to use TextBot.beginDialog() to push 
-notifications or start a new conversation with the user.
+This Bot demonstrates how to use an IntentDialog with a LuisRecognizer to add 
+natural language support to a bot. The example also shows how to use 
+UniversalBot.send() to push notifications to a user.
 
 For a complete walkthrough of creating this bot see the article below.
 
-    http://docs.botframework.com/builder/node/understanding-natural-language/
+    http://docs.botframework.com/builder/node/guides/understanding-natural-language/
 
 -----------------------------------------------------------------------------*/
 
-var builder = require('../../');
+var builder = require('../../core/');
 
-// Create LUIS Dialog that points at our model and add it as the root '/' dialog for our Cortana Bot.
-var model = process.env.model || 'https://api.projectoxford.ai/luis/v1/application?id=c413b2ef-382c-45bd-8ff0-f76d60e2a821&subscription-key=6d0966209c6e4f6b835ce34492f3e6d9&q=';
-var dialog = new builder.LuisDialog(model);
-var cortanaBot = new builder.TextBot();
-cortanaBot.add('/', dialog);
+// Create bot and bind to console
+var connector = new builder.ConsoleConnector().listen();
+var bot = new builder.UniversalBot(connector, function (session) {
+    session.send("Hi... I'm the alarm bot sample. I can set new alarms or delete existing ones.");
+});
 
-// Add intent handlers
-dialog.on('builtin.intent.alarm.set_alarm', [
+// Add global LUIS recognizer to bot
+var model = process.env.model || 'https://api.projectoxford.ai/luis/v2.0/apps/c413b2ef-382c-45bd-8ff0-f76d60e2a821?subscription-key=6d0966209c6e4f6b835ce34492f3e6d9';
+bot.recognizer(new builder.LuisRecognizer(model));
+
+// Set Alarm dialog
+bot.dialog('/setAlarm', [
     function (session, args, next) {
         // Resolve and store any entities passed from LUIS.
-        var title = builder.EntityRecognizer.findEntity(args.entities, 'builtin.alarm.title');
-        var time = builder.EntityRecognizer.resolveTime(args.entities);
+        var intent = args.intent;
+        var title = builder.EntityRecognizer.findEntity(intent.entities, 'builtin.alarm.title');
+        var time = builder.EntityRecognizer.resolveTime(intent.entities);
         var alarm = session.dialogData.alarm = {
           title: title ? title.entity : null,
           timestamp: time ? time.getTime() : null  
@@ -41,8 +46,8 @@ dialog.on('builtin.intent.alarm.set_alarm', [
             alarm.title = results.response;
         }
 
-        // Prompt for time (title will be blank if the user said cancel)
-        if (alarm.title && !alarm.timestamp) {
+        // Prompt for time
+        if (!alarm.timestamp) {
             builder.Prompts.time(session, 'What time would you like to set the alarm for?');
         } else {
             next();
@@ -55,73 +60,80 @@ dialog.on('builtin.intent.alarm.set_alarm', [
             alarm.timestamp = time ? time.getTime() : null;
         }
         
-        // Set the alarm (if title or timestamp is blank the user said cancel)
-        if (alarm.title && alarm.timestamp) {
-            // Save address of who to notify and write to scheduler.
-            alarm.to = session.message.from;
-            alarm.from = session.message.to;
-            alarms[alarm.title] = alarm;
-            
-            // Send confirmation to user
-            var date = new Date(alarm.timestamp);
-            var isAM = date.getHours() < 12;
-            session.send('Creating alarm named "%s" for %d/%d/%d %d:%02d%s',
-                alarm.title,
-                date.getMonth() + 1, date.getDate(), date.getFullYear(),
-                isAM ? date.getHours() : date.getHours() - 12, date.getMinutes(), isAM ? 'am' : 'pm');
-        } else {
-            session.send('Ok... no problem.');
-        }
-    }
-]);
-
-dialog.on('builtin.intent.alarm.delete_alarm', [
-    function (session, args, next) {
-        // Resolve entities passed from LUIS.
-        var title;
-        var entity = builder.EntityRecognizer.findEntity(args.entities, 'builtin.alarm.title');
-        if (entity) {
-            // Verify its in our set of alarms.
-            title = builder.EntityRecognizer.findBestMatch(alarms, entity.entity);
-        }
+        // Save address of who to notify and write to scheduler.
+        alarm.address = session.message.address;
+        alarms[alarm.title] = alarm;
         
-        // Prompt for alarm name
-        if (!title) {
-            builder.Prompts.choice(session, 'Which alarm would you like to delete?', alarms);
+        // Send confirmation to user
+        var date = new Date(alarm.timestamp);
+        var isAM = date.getHours() < 12;
+        session.endDialog('Creating alarm named "%s" for %d/%d/%d %d:%02d%s',
+            alarm.title,
+            date.getMonth() + 1, date.getDate(), date.getFullYear(),
+            isAM ? date.getHours() : date.getHours() - 12, date.getMinutes(), isAM ? 'am' : 'pm');
+    }
+]).triggerAction({ 
+    matches: 'builtin.intent.alarm.set_alarm',
+    confirmPrompt: "This will cancel the current alarm. Are you sure?"
+}).cancelAction('cancelSetAlarm', "Alarm canceled.", {
+    matches: /^(cancel|nevermind)/i,
+    confirmPrompt: "Are you sure?"
+});
+
+// Delete Alarm dialog
+bot.dialog('/deleteAlarm', [
+    function (session, args, next) {
+        if (alarmCount() > 0) {
+            // Resolve entities passed from LUIS.
+            var title;
+            var intent = args.intent;
+            var entity = builder.EntityRecognizer.findEntity(intent.entities, 'builtin.alarm.title');
+            if (entity) {
+                // Verify its in our set of alarms.
+                title = builder.EntityRecognizer.findBestMatch(alarms, entity.entity);
+            }
+            
+            // Prompt for alarm name
+            if (!title) {
+                builder.Prompts.choice(session, 'Which alarm would you like to delete?', alarms);
+            } else {
+                next({ response: title });
+            }
         } else {
-            next({ response: title });
+            session.endDialog("No alarms to delete.");
         }
     },
     function (session, results) {
-        // If response is null the user canceled the task
-        if (results.response) {
-            delete alarms[results.response.entity];
-            session.send("Deleted the '%s' alarm.", results.response.entity);
-        } else {
-            session.send('Ok... no problem.');
-        }
+        delete alarms[results.response.entity];
+        session.endDialog("Deleted the '%s' alarm.", results.response.entity);
     }
-]);
-
-dialog.onDefault(builder.DialogAction.send("I'm sorry I didn't understand. I can only create & delete alarms."));
-
-// Add notification dialog
-cortanaBot.add('/notify', function (session, alarm) {
-    // We don't want replies coming to us so we'll use endDialog() instead of send()
-    session.endDialog("Here's your '%s' alarm.", alarm.title);
+]).triggerAction({
+    matches: 'builtin.intent.alarm.delete_alarm'
+}).cancelAction('cancelDeleteAlarm', "Ok.", {
+    matches: /^(cancel|nevermind)/i
 });
 
-cortanaBot.listenStdin();
-
-// Very simple demo scheduler
+// Very simple alarm scheduler
 var alarms = {};
 setInterval(function () {
     var now = new Date().getTime();
     for (var key in alarms) {
         var alarm = alarms[key];
         if (now >= alarm.timestamp) {
-            cortanaBot.beginDialog({ from: alarm.from, to: alarm.to }, '/notify', alarm);
+            var msg = new builder.Message()
+                .address(alarm.address)
+                .text("Here's your '%s' alarm.", alarm.title);
+            bot.send(msg);
             delete alarms[key];
         }
     }
 }, 15000);
+
+// Helpers
+function alarmCount() {
+    var i = 0;
+    for (var name in alarms) {
+        i++;
+    }
+    return i;
+}

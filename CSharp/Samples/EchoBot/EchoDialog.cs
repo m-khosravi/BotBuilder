@@ -1,8 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
-
 using Microsoft.Bot.Builder.Dialogs;
 using Microsoft.Bot.Connector;
 
@@ -18,7 +15,7 @@ namespace Microsoft.Bot.Sample.EchoBot
             context.Wait(MessageReceivedAsync);
         }
 
-        public virtual async Task MessageReceivedAsync(IDialogContext context, IAwaitable<Message> argument)
+        public virtual async Task MessageReceivedAsync(IDialogContext context, IAwaitable<IMessageActivity> argument)
         {
             var message = await argument;
             if (message.Text == "reset")
@@ -32,7 +29,7 @@ namespace Microsoft.Bot.Sample.EchoBot
             }
             else
             {
-                await context.PostAsync(string.Format("{0}: You said {1}", this.count++, message.Text)); 
+                await context.PostAsync($"{this.count++}: You said {message.Text}");
                 context.Wait(MessageReceivedAsync);
             }
         }
